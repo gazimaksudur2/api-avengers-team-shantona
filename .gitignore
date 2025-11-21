@@ -76,3 +76,4 @@ observability/grafana/data/
 # Prometheus
 observability/prometheus/data/
 
+documentation/*md
