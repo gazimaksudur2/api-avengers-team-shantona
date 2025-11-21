@@ -1,0 +1,80 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'careforall'
+    environment: 'development'
+
+# Alertmanager configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "alert_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Donation Service
+  - job_name: 'donation-service'
+    dns_sd_configs:
+      - names:
+          - 'donation-service'
+        type: 'A'
+        port: 8001
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Payment Service
+  - job_name: 'payment-service'
+    dns_sd_configs:
+      - names:
+          - 'payment-service'
+        type: 'A'
+        port: 8002
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Totals Service
+  - job_name: 'totals-service'
+    dns_sd_configs:
+      - names:
+          - 'totals-service'
+        type: 'A'
+        port: 8003
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Notification Service
+  - job_name: 'notification-service'
+    dns_sd_configs:
+      - names:
+          - 'notification-service'
+        type: 'A'
+        port: 8004
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # PostgreSQL Exporter (if added)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: []  # Add postgres-exporter:9187 if using
+
+  # Redis Exporter (if added)
+  - job_name: 'redis'
+    static_configs:
+      - targets: []  # Add redis-exporter:9121 if using
+
+  # RabbitMQ
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq:15692']
+    metrics_path: '/metrics'
+

@@ -1,0 +1,271 @@
+version: '3.8'
+
+services:
+  # ===================
+  # API Gateway
+  # ===================
+  api-gateway:
+    image: nginx:alpine
+    container_name: api-gateway
+    ports:
+      - "8000:80"
+    volumes:
+      - ./api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - donation-service
+      - payment-service
+      - totals-service
+      - notification-service
+    networks:
+      - public
+      - backend
+
+  # ===================
+  # Core Services
+  # ===================
+  donation-service:
+    build:
+      context: ./services/donation-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/donations_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=donation-service
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/payments_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/1
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=payment-service
+      - STRIPE_API_KEY=${STRIPE_API_KEY:-sk_test_dummy}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-whsec_dummy}
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+    networks:
+      - backend
+      - public
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  totals-service:
+    build:
+      context: ./services/totals-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 2
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/donations_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/2
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=totals-service
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 2
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/notifications_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/3
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=notification-service
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-dummy}
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ===================
+  # Data Layer
+  # ===================
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_MULTIPLE_DATABASES=donations_db,payments_db,notifications_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    ports:
+      - "5432:5432"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===================
+  # Observability Stack
+  # ===================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - backend
+    depends_on:
+      - donation-service
+      - payment-service
+      - totals-service
+      - notification-service
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - backend
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    networks:
+      - backend
+
+  # ===================
+  # Utilities
+  # ===================
+  outbox-processor:
+    build:
+      context: ./services/donation-service
+      dockerfile: Dockerfile
+    command: python outbox_processor.py
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/donations_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=outbox-processor
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - backend
+    restart: unless-stopped
+
+networks:
+  public:
+    driver: bridge
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:
+
