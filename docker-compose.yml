@@ -16,9 +16,13 @@ services:
       - payment-service
       - totals-service
       - notification-service
+      - campaign-service
+      - bank-service
+      - admin-service
     networks:
       - public
       - backend
+    restart: unless-stopped
 
   # ===================
   # Core Services
@@ -36,9 +40,12 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - SERVICE_NAME=donation-service
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - backend
     healthcheck:
@@ -46,6 +53,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
 
   payment-service:
     build:
@@ -62,9 +70,12 @@ services:
       - STRIPE_API_KEY=${STRIPE_API_KEY:-sk_test_dummy}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-whsec_dummy}
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - backend
       - public
@@ -73,6 +84,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
 
   totals-service:
     build:
@@ -87,9 +99,12 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - SERVICE_NAME=totals-service
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - backend
     healthcheck:
@@ -97,6 +112,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
 
   notification-service:
     build:
@@ -112,9 +128,12 @@ services:
       - SERVICE_NAME=notification-service
       - SENDGRID_API_KEY=${SENDGRID_API_KEY:-dummy}
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - backend
     healthcheck:
@@ -122,6 +141,109 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
+
+  campaign-service:
+    build:
+      context: ./services/campaign-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 2
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/campaigns_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/4
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=campaign-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  bank-service:
+    build:
+      context: ./services/bank-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 2
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/bank_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379/5
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=bank-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  admin-service:
+    build:
+      context: ./services/admin-service
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 1
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/admin_db
+      - DONATION_SERVICE_URL=http://donation-service:8001
+      - PAYMENT_SERVICE_URL=http://payment-service:8002
+      - TOTALS_SERVICE_URL=http://totals-service:8003
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8004
+      - CAMPAIGN_SERVICE_URL=http://campaign-service:8005
+      - BANK_SERVICE_URL=http://bank-service:8006
+      - REDIS_URL=redis://redis:6379/6
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - SERVICE_NAME=admin-service
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-supersecretkey_change_in_production_12345}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      donation-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+      totals-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+      campaign-service:
+        condition: service_started
+      bank-service:
+        condition: service_started
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
 
   # ===================
   # Data Layer
@@ -132,7 +254,7 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_MULTIPLE_DATABASES=donations_db,payments_db,notifications_db
+      - POSTGRES_MULTIPLE_DATABASES=donations_db,payments_db,notifications_db,campaigns_db,bank_db,admin_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
@@ -145,6 +267,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -161,6 +284,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -180,6 +304,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   # ===================
   # Observability Stack
@@ -204,6 +329,10 @@ services:
       - payment-service
       - totals-service
       - notification-service
+      - campaign-service
+      - bank-service
+      - admin-service
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:latest
@@ -222,6 +351,7 @@ services:
       - backend
     depends_on:
       - prometheus
+    restart: unless-stopped
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -234,6 +364,7 @@ services:
       - "4318:4318"    # OTLP HTTP
     networks:
       - backend
+    restart: unless-stopped
 
   # ===================
   # Utilities
@@ -250,11 +381,17 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - SERVICE_NAME=outbox-processor
     depends_on:
-      - postgres
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - backend
     restart: unless-stopped
+    deploy:
+      replicas: 1
 
 networks:
   public:

@@ -1,0 +1,135 @@
+version: '3.8'
+
+# Development Overrides
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  # Development: Enable hot reload and expose ports
+  donation-service:
+    volumes:
+      - ./services/donation-service:/app
+    ports:
+      - "8001:8001"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+  payment-service:
+    volumes:
+      - ./services/payment-service:/app
+    ports:
+      - "8002:8002"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+  totals-service:
+    volumes:
+      - ./services/totals-service:/app
+    ports:
+      - "8003:8003"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+
+  notification-service:
+    volumes:
+      - ./services/notification-service:/app
+    ports:
+      - "8004:8004"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
+
+  campaign-service:
+    volumes:
+      - ./services/campaign-service:/app
+    ports:
+      - "8005:8005"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8005 --reload
+
+  bank-service:
+    volumes:
+      - ./services/bank-service:/app
+    ports:
+      - "8006:8006"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8006 --reload
+
+  admin-service:
+    volumes:
+      - ./services/admin-service:/app
+    ports:
+      - "8007:8007"
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8007 --reload
+
+  # Reduce replicas for development
+  donation-service:
+    deploy:
+      replicas: 1
+
+  payment-service:
+    deploy:
+      replicas: 1
+
+  totals-service:
+    deploy:
+      replicas: 1
+
+  notification-service:
+    deploy:
+      replicas: 1
+
+  campaign-service:
+    deploy:
+      replicas: 1
+
+  bank-service:
+    deploy:
+      replicas: 1
+
+  # Development database with pgAdmin
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@careforall.local
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    ports:
+      - "5050:80"
+    networks:
+      - backend
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # Redis Commander for Redis inspection
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - backend
+    depends_on:
+      - redis
+
+volumes:
+  pgadmin_data:
+
