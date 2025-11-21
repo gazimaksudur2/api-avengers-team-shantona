@@ -41,7 +41,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "payment-service")
-STRIPE_API_KEY = os.getenv("STRIPE_API_KEY", "sk_test_dummy")
+# STRIPE_API_KEY = os.getenv("STRIPE_API_KEY", "sk_test_dummy")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "whsec_dummy")
 
 # Database setup
@@ -360,63 +360,63 @@ async def metrics():
 
 
 @app.post("/api/v1/payments/intent", response_model=PaymentIntentResponse, status_code=201)
-@payment_duration.time()
 async def create_payment_intent(
     payment_data: PaymentIntentCreate,
     db: Session = Depends(get_db)
 ):
     """Create a payment intent (simulated)"""
-    with tracer.start_as_current_span("create_payment_intent") as span:
-        span.set_attribute("donation_id", str(payment_data.donation_id))
-        span.set_attribute("amount", payment_data.amount)
-        span.set_attribute("gateway", payment_data.gateway)
-        
-        try:
-            # Generate payment intent ID (simulated)
-            payment_intent_id = f"pi_{uuid.uuid4().hex[:24]}"
+    with payment_duration.time():
+        with tracer.start_as_current_span("create_payment_intent") as span:
+            span.set_attribute("donation_id", str(payment_data.donation_id))
+            span.set_attribute("amount", payment_data.amount)
+            span.set_attribute("gateway", payment_data.gateway)
             
-            # Create payment transaction
-            payment = PaymentTransaction(
-                id=uuid.uuid4(),
-                donation_id=payment_data.donation_id,
-                payment_intent_id=payment_intent_id,
-                amount=payment_data.amount,
-                currency=payment_data.currency,
-                status="INITIATED",
-                gateway=payment_data.gateway,
-                gateway_response={"client_secret": f"{payment_intent_id}_secret_xxx"}
-            )
-            
-            db.add(payment)
-            db.commit()
-            db.refresh(payment)
-            
-            # Update metrics
-            payment_processed_counter.labels(
-                status="INITIATED",
-                gateway=payment_data.gateway
-            ).inc()
-            
-            span.set_attribute("payment_id", str(payment.id))
-            span.set_attribute("status", "success")
-            
-            return PaymentIntentResponse(
-                id=payment.id,
-                payment_intent_id=payment.payment_intent_id,
-                donation_id=payment.donation_id,
-                amount=float(payment.amount),
-                currency=payment.currency,
-                status=payment.status,
-                gateway=payment.gateway,
-                client_secret=payment.gateway_response.get("client_secret"),
-                created_at=payment.created_at
-            )
-            
-        except Exception as e:
-            db.rollback()
-            span.set_attribute("status", "error")
-            span.set_attribute("error", str(e))
-            raise HTTPException(status_code=500, detail=f"Failed to create payment intent: {str(e)}")
+            try:
+                # Generate payment intent ID (simulated)
+                payment_intent_id = f"pi_{uuid.uuid4().hex[:24]}"
+                
+                # Create payment transaction
+                payment = PaymentTransaction(
+                    id=uuid.uuid4(),
+                    donation_id=payment_data.donation_id,
+                    payment_intent_id=payment_intent_id,
+                    amount=payment_data.amount,
+                    currency=payment_data.currency,
+                    status="INITIATED",
+                    gateway=payment_data.gateway,
+                    gateway_response={"client_secret": f"{payment_intent_id}_secret_xxx"}
+                )
+                
+                db.add(payment)
+                db.commit()
+                db.refresh(payment)
+                
+                # Update metrics
+                payment_processed_counter.labels(
+                    status="INITIATED",
+                    gateway=payment_data.gateway
+                ).inc()
+                
+                span.set_attribute("payment_id", str(payment.id))
+                span.set_attribute("status", "success")
+                
+                return PaymentIntentResponse(
+                    id=payment.id,
+                    payment_intent_id=payment.payment_intent_id,
+                    donation_id=payment.donation_id,
+                    amount=float(payment.amount),
+                    currency=payment.currency,
+                    status=payment.status,
+                    gateway=payment.gateway,
+                    client_secret=payment.gateway_response.get("client_secret"),
+                    created_at=payment.created_at
+                )
+                
+            except Exception as e:
+                db.rollback()
+                span.set_attribute("status", "error")
+                span.set_attribute("error", str(e))
+                raise HTTPException(status_code=500, detail=f"Failed to create payment intent: {str(e)}")
 
 
 @app.post("/api/v1/payments/webhook")

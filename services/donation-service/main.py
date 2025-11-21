@@ -79,7 +79,7 @@ class Donation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     version = Column(Integer, default=1)
-    metadata = Column(JSONB, nullable=True)
+    extra_data = Column(JSONB, nullable=True)
 
     __table_args__ = (
         Index('idx_donations_status_campaign', 'status', 'campaign_id'),
@@ -114,7 +114,7 @@ class DonationCreate(BaseModel):
     donor_email: EmailStr
     amount: float = Field(gt=0, le=1000000)
     currency: str = Field(default="USD", pattern="^[A-Z]{3}$")
-    metadata: Optional[dict] = None
+    extra_data: Optional[dict] = None
 
     @validator('amount')
     def validate_amount(cls, v):
@@ -215,7 +215,7 @@ def create_outbox_event(db: Session, donation: Donation, event_type: str):
             "payment_intent_id": donation.payment_intent_id,
             "created_at": donation.created_at.isoformat(),
             "updated_at": donation.updated_at.isoformat(),
-            "metadata": donation.metadata
+            "extra_data": donation.extra_data
         }
     )
     db.add(event)
@@ -261,7 +261,6 @@ async def metrics():
 
 
 @app.post("/api/v1/donations", response_model=DonationResponse, status_code=201)
-@donation_duration.time()
 async def create_donation(
     donation_data: DonationCreate,
     db: Session = Depends(get_db)
@@ -272,59 +271,60 @@ async def create_donation(
     This ensures that both the donation record and the event are written
     atomically in a single transaction, preventing lost donations.
     """
-    with tracer.start_as_current_span("create_donation") as span:
-        span.set_attribute("campaign_id", str(donation_data.campaign_id))
-        span.set_attribute("amount", donation_data.amount)
-        
-        try:
-            # Start transaction
-            donation = Donation(
-                id=uuid.uuid4(),
-                campaign_id=donation_data.campaign_id,
-                donor_email=donation_data.donor_email,
-                amount=donation_data.amount,
-                currency=donation_data.currency,
-                status="PENDING",
-                metadata=donation_data.metadata
-            )
+    with donation_duration.time():
+        with tracer.start_as_current_span("create_donation") as span:
+            span.set_attribute("campaign_id", str(donation_data.campaign_id))
+            span.set_attribute("amount", donation_data.amount)
             
-            db.add(donation)
-            db.flush()  # Get the ID without committing
-            
-            # Create outbox event in SAME transaction
-            create_outbox_event(db, donation, "DonationCreated")
-            
-            # Commit both atomically
-            db.commit()
-            db.refresh(donation)
-            
-            # Update metrics
-            donation_created_counter.labels(
-                campaign_id=str(donation.campaign_id),
-                status=donation.status
-            ).inc()
-            
-            http_requests_total.labels(
-                method="POST",
-                endpoint="/api/v1/donations",
-                status="201"
-            ).inc()
-            
-            span.set_attribute("donation_id", str(donation.id))
-            span.set_attribute("status", "success")
-            
-            return DonationResponse.from_orm(donation)
-            
-        except Exception as e:
-            db.rollback()
-            span.set_attribute("status", "error")
-            span.set_attribute("error", str(e))
-            http_requests_total.labels(
-                method="POST",
-                endpoint="/api/v1/donations",
-                status="500"
-            ).inc()
-            raise HTTPException(status_code=500, detail=f"Failed to create donation: {str(e)}")
+            try:
+                # Start transaction
+                donation = Donation(
+                    id=uuid.uuid4(),
+                    campaign_id=donation_data.campaign_id,
+                    donor_email=donation_data.donor_email,
+                    amount=donation_data.amount,
+                    currency=donation_data.currency,
+                    status="PENDING",
+                    extra_data=donation_data.extra_data
+                )
+                
+                db.add(donation)
+                db.flush()  # Get the ID without committing
+                
+                # Create outbox event in SAME transaction
+                create_outbox_event(db, donation, "DonationCreated")
+                
+                # Commit both atomically
+                db.commit()
+                db.refresh(donation)
+                
+                # Update metrics
+                donation_created_counter.labels(
+                    campaign_id=str(donation.campaign_id),
+                    status=donation.status
+                ).inc()
+                
+                http_requests_total.labels(
+                    method="POST",
+                    endpoint="/api/v1/donations",
+                    status="201"
+                ).inc()
+                
+                span.set_attribute("donation_id", str(donation.id))
+                span.set_attribute("status", "success")
+                
+                return DonationResponse.from_orm(donation)
+                
+            except Exception as e:
+                db.rollback()
+                span.set_attribute("status", "error")
+                span.set_attribute("error", str(e))
+                http_requests_total.labels(
+                    method="POST",
+                    endpoint="/api/v1/donations",
+                    status="500"
+                ).inc()
+                raise HTTPException(status_code=500, detail=f"Failed to create donation: {str(e)}")
 
 
 @app.get("/api/v1/donations/{donation_id}", response_model=DonationResponse)

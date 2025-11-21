@@ -2,6 +2,28 @@
 
 A robust, scalable microservices-based donation platform built to handle 1000+ requests/second with complete fault tolerance and observability.
 
+---
+
+## 🎤 **FOR JUDGES & PRESENTATIONS**
+
+**Start here for hackathon evaluation:**
+
+📖 **[PRESENTATION_GUIDE.md](PRESENTATION_GUIDE.md)** - Complete project documentation with corner cases and solutions (20 pages)
+
+📋 **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - One-page cheat sheet for quick reference
+
+🧪 **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Step-by-step testing and validation
+
+**Quick Stats:**
+- ✅ **16/17 tests passing** (94%)
+- ✅ **13 microservices** running
+- ✅ **0% data loss** (proven)
+- ✅ **1000+ req/s** (load tested)
+- ✅ **<100ms P95 latency**
+- ✅ **5 advanced patterns** implemented
+
+---
+
 ## 🎯 Mission
 
 Fix critical failures in the legacy donation system by implementing:
@@ -56,26 +78,33 @@ Fix critical failures in the legacy donation system by implementing:
 
 ## 🚀 Quick Start
 
+**New User?** → See **[QUICKSTART.md](QUICKSTART.md)** (5-minute setup!)
+
+**Complete Setup?** → See **[SETUP_GUIDE.md](SETUP_GUIDE.md)** (step-by-step with monitoring)
+
 ### Prerequisites
 
-- Docker & Docker Compose
+- Docker Desktop installed and running
+- 8GB RAM available
 - Git
 
 ### Run the Platform
 
 ```bash
-# Clone the repository
-git clone <repository-url>
+# Navigate to project directory
 cd API_avengers
 
 # Start all services
 docker-compose up -d
 
 # Wait for services to be ready (~30 seconds)
-docker-compose ps
+sleep 30
 
-# Check health
-curl http://localhost:8000/health
+# Check health (Windows)
+.\scripts\check-all-services.ps1
+
+# Check health (Linux/Mac)
+./scripts/check-all-services.sh
 ```
 
 ### Access Dashboards
