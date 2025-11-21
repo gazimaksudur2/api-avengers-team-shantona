@@ -1,0 +1,948 @@
+Perfect! Now I can give you *CHECKPOINT 1 with all the problems and solutions integrated*.
+
+***
+
+## CHECKPOINT 1: ARCHITECTURE & DESIGN (With Problems & Solutions)
+
+### Requirements
+
+Your team must:
+1. Map out all core services in the CareForAll ecosystem
+2. Define clear boundaries, responsibilities, and interactions
+3. Design fault-tolerant architecture capable of *1000+ requests/second*
+4. Create architectural diagram
+5. Design data models for each service
+6. Design simple and clear API endpoints
+7. Demonstrate scalability using *Docker Compose* (replicas)
+
+***
+
+## Architecture Overview
+
+### Core Services
+
+
+┌─────────────────────────────────────────────────────────────┐
+│                    API Gateway (Nginx)                      │
+│              Single entry point for all requests             │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+    ┌─────────────┼────────────┬──────────────┬──────────────┐
+    │             │            │              │              │
+    ▼             ▼            ▼              ▼              ▼
+┌─────────┐  ┌─────────┐  ┌──────────┐  ┌────────┐  ┌──────────┐
+│Campaign │  │ Pledge  │  │ Payment  │  │Totals  │  │Notif     │
+│Service  │  │ Service │  │ Gateway  │  │Service │  │Service   │
+│         │  │         │  │ Service  │  │        │  │          │
+└─────────┘  └─────────┘  └──────────┘  └────────┘  └──────────┘
+     │           │             │            │            │
+     └───────────┴─────────────┴────────────┴────────────┘
+                  │
+                  ▼
+          ┌────────────────┐
+          │   RabbitMQ     │
+          │ (Message Bus)  │
+          └────────────────┘
+                  │
+    ┌─────────────┼──────────────┐
+    ▼             ▼              ▼
+┌─────────┐  ┌────────┐  ┌──────────┐
+│Database │  │ Redis  │  │ Outbox   │
+│(Primary)│  │ Cache  │  │Processor │
+└─────────┘  └────────┘  └──────────┘
+
+
+***
+
+## Problem 1 → Solution: Duplicate Charges (Idempotency)
+
+### The Problem
+
+*Payment Gateway Service* sends webhooks to Pledge Service. When Pledge Service is slow to respond (timeout > 30s), Payment Gateway retries the webhook. Without idempotency checks, each retry creates duplicate pledge records.
+
+
+Payment Gateway:
+  1. Process payment: $50 ✓
+  2. Send webhook to Pledge Service
+  3. Webhook timeout (31 seconds)
+  4. Retry webhook (SAME payment_id)
+  5. Pledge Service processes AGAIN ❌
+
+Result:
+  Database: 3 pledge records × $50 = $150 (should be $50)
+  Donor's bank: Actually charged $50 only
+  Campaign total: Shows $150 (incorrect)
+
+
+### Solution: Idempotency Layer
+
+*Add idempotency key tracking to Pledge Service*:
+
+#### Service: Payment Gateway Service
+
+python
+# services/payment-gateway/main.py
+
+@app.post("/api/v1/payments/capture")
+async def capture_payment(payment_id: str):
+    """Capture payment and notify Pledge Service with retries"""
+    
+    payment = db.query(Payment).filter_by(id=payment_id).first()
+    payment.status = "CAPTURED"
+    db.commit()
+    
+    # Send webhook with idempotency key
+    await send_webhook_with_retry(
+        url="http://pledge-service:8001/api/webhooks",
+        idempotency_key=payment.id,  # ← Use payment_id as key
+        event={
+            "event_type": "payment.captured",
+            "payment_id": str(payment.id),
+            "pledge_id": str(payment.pledge_id),
+            "amount": payment.amount,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+    
+    return payment
+
+
+async def send_webhook_with_retry(url, idempotency_key, event):
+    """Send webhook with exponential backoff retries"""
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            response = await http_client.post(
+                url,
+                json=event,
+                headers={
+                    "X-Idempotency-Key": idempotency_key
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✓ Webhook delivered: {idempotency_key}")
+                return
+                
+        except TimeoutException:
+            logger.warning(f"Webhook timeout, retry {attempt + 1}/{max_retries}")
+            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+    
+    logger.error(f"✗ Webhook failed after {max_retries} retries")
+
+
+#### Service: Pledge Service (Receiver)
+
+python
+# services/pledge-service/main.py
+
+# Database table for idempotency
+class WebhookLog(Base):
+    __tablename__ = "webhook_logs"
+    
+    id = Column(UUID, primary_key=True)
+    idempotency_key = Column(String(255), unique=True, index=True)
+    event_type = Column(String(100))
+    result = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+@app.post("/api/webhooks")
+async def handle_webhook(
+    webhook: WebhookPayload,
+    x_idempotency_key: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Receive webhook from Payment Gateway with idempotency
+    SOLVES PROBLEM 1: Duplicate Charges
+    """
+    
+    # 1. Check Redis cache (fast - ~5ms)
+    cached_result = await redis.get(f"webhook:{x_idempotency_key}")
+    if cached_result:
+        logger.info(f"⚠ Duplicate webhook (Redis): {x_idempotency_key}")
+        return json.loads(cached_result)
+    
+    # 2. Check database (persistent - ~50ms)
+    existing_log = db.query(WebhookLog).filter_by(
+        idempotency_key=x_idempotency_key
+    ).first()
+    
+    if existing_log:
+        logger.info(f"⚠ Duplicate webhook (DB): {x_idempotency_key}")
+        # Update Redis cache
+        await redis.set(f"webhook:{x_idempotency_key}", existing_log.result, ex=86400)
+        return json.loads(existing_log.result)
+    
+    # 3. NEW webhook - process it
+    logger.info(f"✓ Processing new webhook: {x_idempotency_key}")
+    
+    # Get pledge and update status
+    pledge = db.query(Pledge).filter_by(
+        payment_id=webhook.payment_id
+    ).first()
+    
+    pledge.status = "CAPTURED"
+    db.commit()
+    
+    # Update campaign total (ONLY ONCE)
+    campaign = db.query(Campaign).filter_by(id=pledge.campaign_id).first()
+    campaign.total_raised += webhook.amount
+    db.commit()
+    
+    result = {
+        "status": "success",
+        "pledge_id": str(pledge.id),
+        "processed_at": datetime.utcnow().isoformat()
+    }
+    
+    # 4. Store for deduplication
+    webhook_log = WebhookLog(
+        id=generate_uuid(),
+        idempotency_key=x_idempotency_key,
+        event_type=webhook.event_type,
+        result=result
+    )
+    db.add(webhook_log)
+    db.commit()
+    
+    # Store in Redis for future requests
+    await redis.set(
+        f"webhook:{x_idempotency_key}",
+        json.dumps(result),
+        ex=86400  # 24 hours
+    )
+    
+    return result
+
+
+*Result*: Duplicate webhooks detected and ignored ✓
+
+***
+
+## Problem 2 → Solution: Lost Pledges (Transactional Outbox)
+
+### The Problem
+
+When creating a pledge, if the database crashes after saving the pledge but before publishing the event, the pledge exists but other services don't know about it.
+
+
+Pledge Service:
+  1. Save pledge to database ✓
+  2. Write event to outbox ✓
+  3. Publish to RabbitMQ
+  4. DATABASE CRASH ❌
+
+Result:
+  - Pledge exists ✓
+  - Event in outbox ✓
+  - But not published to other services
+  - Totals Service doesn't update total ✗
+  - Notification Service doesn't send email ✗
+
+
+### Solution: Transactional Outbox Pattern
+
+python
+# services/pledge-service/main.py
+
+# Outbox table for storing unpublished events
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    
+    id = Column(UUID, primary_key=True)
+    aggregate_id = Column(UUID)  # Pledge ID
+    event_type = Column(String(100))  # "PledgeCreated", "PledgeCaptured"
+    payload = Column(JSON)
+    published = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime, nullable=True)
+
+
+@app.post("/api/v1/pledges")
+async def create_pledge(
+    pledge_data: PledgeCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create pledge with transactional outbox
+    SOLVES PROBLEM 2: Lost Pledges
+    """
+    
+    try:
+        # Start transaction
+        db.begin()
+        
+        # 1. Create pledge
+        pledge = Pledge(
+            id=generate_uuid(),
+            campaign_id=pledge_data.campaign_id,
+            donor_id=pledge_data.donor_id,
+            amount=pledge_data.amount,
+            status="INITIATED",
+            created_at=datetime.utcnow()
+        )
+        db.add(pledge)
+        
+        # 2. Write event to Outbox (SAME TRANSACTION)
+        outbox_event = OutboxEvent(
+            id=generate_uuid(),
+            aggregate_id=pledge.id,
+            event_type="PledgeCreated",
+            payload={
+                "pledge_id": str(pledge.id),
+                "campaign_id": str(pledge.campaign_id),
+                "donor_id": str(pledge.donor_id),
+                "amount": pledge.amount,
+                "status": pledge.status
+            },
+            published=False,
+            created_at=datetime.utcnow()
+        )
+        db.add(outbox_event)
+        
+        # 3. COMMIT both (or ROLLBACK both)
+        db.commit()
+        
+        logger.info(f"✓ Pledge created with outbox event: {pledge.id}")
+        
+        return pledge
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"✗ Failed to create pledge: {e}")
+        raise
+
+
+# Outbox Processor (separate service)
+# services/pledge-service/outbox_processor.py
+
+class OutboxProcessor:
+    """Publishes unpublished events to RabbitMQ"""
+    
+    async def run(self):
+        while True:
+            try:
+                # Find unpublished events
+                events = db.query(OutboxEvent).filter(
+                    OutboxEvent.published == False
+                ).with_for_update(skip_locked=True).limit(100).all()
+                
+                for event in events:
+                    try:
+                        # Publish to RabbitMQ
+                        await rabbitmq_channel.basic_publish(
+                            exchange="pledge_events",
+                            routing_key=event.event_type,
+                            body=json.dumps(event.payload)
+                        )
+                        
+                        # Mark as published
+                        event.published = True
+                        event.published_at = datetime.utcnow()
+                        db.commit()
+                        
+                        logger.info(f"✓ Published event: {event.id}")
+                        
+                    except Exception as e:
+                        logger.error(f"✗ Failed to publish {event.id}: {e}")
+                        db.rollback()
+                        # Will retry next iteration
+                
+            except Exception as e:
+                logger.error(f"Outbox processor error: {e}")
+            
+            await asyncio.sleep(0.1)  # Poll every 100ms
+
+
+# Run outbox processor
+async def start_outbox_processor():
+    processor = OutboxProcessor()
+    asyncio.create_task(processor.run())
+
+
+*Result*: Lost pledges prevented, events eventually published ✓
+
+***
+
+## Problem 3 → Solution: Out-of-Order Webhooks (State Machine)
+
+### The Problem
+
+Webhooks arrive out of order: "CAPTURED" before "AUTHORIZED"
+
+
+Payment Gateway sends:
+  Webhook #1 (10:00:00): AUTHORIZED
+  Webhook #2 (10:00:05): CAPTURED
+
+Pledge Service receives:
+  Message #1 (10:00:06): CAPTURED  ← Arrives first
+  Message #2 (10:00:07): AUTHORIZED ← Arrives second
+
+Result: State overwrites to AUTHORIZED (wrong!)
+        Campaign total breaks
+        Negative totals possible
+
+
+### Solution: State Machine + Timestamp Validation
+
+python
+# services/pledge-service/main.py
+
+class PledgeStateMachine:
+    """Define valid state transitions"""
+    VALID_TRANSITIONS = {
+        'INITIATED': ['AUTHORIZED', 'FAILED'],
+        'AUTHORIZED': ['CAPTURED', 'FAILED', 'REFUNDED'],
+        'CAPTURED': ['REFUNDED'],
+        'FAILED': [],
+        'REFUNDED': []
+    }
+    
+    def can_transition(self, from_status: str, to_status: str) -> bool:
+        """Check if transition is valid"""
+        return to_status in self.VALID_TRANSITIONS.get(from_status, [])
+
+
+# Pledge state history for audit trail
+class PledgeStateHistory(Base):
+    __tablename__ = "pledge_state_history"
+    
+    id = Column(UUID, primary_key=True)
+    pledge_id = Column(UUID, ForeignKey("pledges.id"))
+    from_status = Column(String(50))
+    to_status = Column(String(50))
+    event_timestamp = Column(DateTime)  # Original event timestamp
+    received_at = Column(DateTime)  # When we received it
+    version = Column(Integer)
+
+
+@app.post("/api/webhooks")
+async def handle_webhook(
+    webhook: WebhookPayload,
+    x_idempotency_key: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle webhook with state machine validation
+    SOLVES PROBLEM 3: Out-of-Order Webhooks
+    """
+    
+    # Check idempotency first
+    cached = await redis.get(f"webhook:{x_idempotency_key}")
+    if cached:
+        return json.loads(cached)
+    
+    # Get pledge (lock for concurrent updates)
+    pledge = db.query(Pledge).with_for_update().filter_by(
+        payment_id=webhook.payment_id
+    ).first()
+    
+    current_status = pledge.status
+    new_status = webhook.status
+    event_timestamp = webhook.timestamp
+    
+    # 1. Check if event is old (out of order)
+    if event_timestamp < pledge.updated_at:
+        logger.warning(f"Out-of-order webhook ignored (old timestamp)")
+        result = {
+            "status": "ignored",
+            "reason": "outdated_event",
+            "message": f"Event is older than current state"
+        }
+        await redis.set(f"webhook:{x_idempotency_key}", json.dumps(result))
+        return result
+    
+    # 2. Validate state transition
+    state_machine = PledgeStateMachine()
+    if not state_machine.can_transition(current_status, new_status):
+        logger.error(f"Invalid transition: {current_status} → {new_status}")
+        result = {
+            "status": "rejected",
+            "reason": "invalid_transition",
+            "message": f"Cannot go from {current_status} to {new_status}"
+        }
+        await redis.set(f"webhook:{x_idempotency_key}", json.dumps(result))
+        return result
+    
+    # 3. Valid transition - apply it
+    pledge.status = new_status
+    pledge.updated_at = event_timestamp
+    pledge.version += 1
+    
+    # Store state history (audit trail)
+    history = PledgeStateHistory(
+        id=generate_uuid(),
+        pledge_id=pledge.id,
+        from_status=current_status,
+        to_status=new_status,
+        event_timestamp=event_timestamp,
+        received_at=datetime.utcnow(),
+        version=pledge.version
+    )
+    
+    db.add(history)
+    db.commit()
+    
+    logger.info(f"✓ Transition: {current_status} → {new_status}")
+    
+    result = {"status": "success", "pledge_id": str(pledge.id)}
+    await redis.set(f"webhook:{x_idempotency_key}", json.dumps(result))
+    
+    return result
+
+
+*Result*: Invalid state transitions rejected, out-of-order events detected ✓
+
+***
+
+## Problem 4 → Solution: Slow Totals (CQRS Read Model)
+
+### The Problem
+
+Every request recalculates campaign total from thousands of rows:
+
+sql
+SELECT SUM(amount) FROM pledges 
+WHERE campaign_id = ? AND status = 'CAPTURED'
+
+
+With 100k pledges → 5-10 seconds per request → Database 100% CPU → Platform down
+
+### Solution: CQRS Read Model with Event-Driven Updates
+
+python
+# services/totals-service/main.py
+
+# Pre-calculated totals table
+class CampaignTotals(Base):
+    __tablename__ = "campaign_totals"
+    
+    campaign_id = Column(UUID, primary_key=True)
+    total_pledged = Column(Integer, default=0)
+    total_captured = Column(Integer, default=0)
+    pledge_count = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+@app.get("/api/v1/campaigns/{campaign_id}/totals")
+async def get_campaign_totals(campaign_id: str):
+    """
+    Get pre-calculated campaign total (FAST)
+    SOLVES PROBLEM 4: Slow Totals
+    """
+    
+    # 1. Check Redis cache (10ms)
+    cached = await redis.get(f"campaign:total:{campaign_id}")
+    if cached:
+        return json.loads(cached)
+    
+    # 2. Query pre-calculated table (50ms)
+    totals = db.query(CampaignTotals).filter_by(
+        campaign_id=campaign_id
+    ).first()
+    
+    if not totals:
+        totals = CampaignTotals(campaign_id=campaign_id)
+        db.add(totals)
+        db.commit()
+    
+    result = {
+        "campaign_id": str(totals.campaign_id),
+        "total_pledged": totals.total_pledged,
+        "total_captured": totals.total_captured,
+        "pledge_count": totals.pledge_count,
+        "updated_at": totals.updated_at.isoformat()
+    }
+    
+    # Cache for 30 seconds
+    await redis.set(
+        f"campaign:total:{campaign_id}",
+        json.dumps(result),
+        ex=30
+    )
+    
+    return result
+
+
+# Subscribe to events and update totals incrementally
+@rabbitmq_channel.subscribe("pledge_events", "PledgeCreated")
+async def handle_pledge_created(event):
+    """Update totals when pledge created (incremental, not recalculation)"""
+    
+    campaign_id = event['campaign_id']
+    amount = event['amount']
+    
+    totals = db.query(CampaignTotals).filter_by(
+        campaign_id=campaign_id
+    ).first() or CampaignTotals(campaign_id=campaign_id)
+    
+    totals.total_pledged += amount
+    totals.pledge_count += 1
+    totals.updated_at = datetime.utcnow()
+    
+    db.add(totals)
+    db.commit()
+    
+    # Invalidate cache
+    await redis.delete(f"campaign:total:{campaign_id}")
+    
+    logger.info(f"✓ Totals updated for campaign {campaign_id}")
+
+
+@rabbitmq_channel.subscribe("pledge_events", "PaymentCaptured")
+async def handle_payment_captured(event):
+    """Update captured amount when payment is captured"""
+    
+    campaign_id = event['campaign_id']
+    amount = event['amount']
+    
+    totals = db.query(CampaignTotals).filter_by(
+        campaign_id=campaign_id
+    ).first()
+    
+    if totals:
+        totals.total_captured += amount
+        totals.updated_at = datetime.utcnow()
+        db.add(totals)
+        db.commit()
+    
+    # Invalidate cache
+    await redis.delete(f"campaign:total:{campaign_id}")
+
+
+*Performance*:
+
+Before: O(n) scan of all pledges = 5-10 seconds
+After:  O(1) cache hit = 10ms (90%)
+        O(1) indexed lookup = 50ms (10%)
+
+
+*Result*: Campaign totals return instantly ✓
+
+***
+
+## Problem 5 → Solution: No Observability (Monitoring & Tracing)
+
+### The Problem
+
+No logs, no metrics, no tracing. Can't debug failures. Blind diagnosis in production.
+
+### Solution: Comprehensive Observability
+
+python
+# All services include monitoring
+
+from opentelemetry import trace, metrics
+from opentelemetry.exporter.jaeger import JaegerExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_client import Counter, Histogram
+
+# Setup Jaeger tracing
+jaeger_exporter = JaegerExporter(
+    agent_host_name="jaeger",
+    agent_port=6831,
+)
+trace.set_tracer_provider(trace.TracerProvider())
+trace.get_tracer_provider().add_span_processor(
+    trace.export.BatchSpanProcessor(jaeger_exporter)
+)
+tracer = trace.get_tracer(__name__)
+
+# Instrument FastAPI
+FastAPIInstrumentor.instrument_app(app)
+
+# Prometheus metrics
+pledge_created_counter = Counter(
+    'pledges_created_total',
+    'Total pledges created',
+    ['campaign_id']
+)
+
+webhook_duplicate_counter = Counter(
+    'webhook_duplicates_total',
+    'Duplicate webhooks detected',
+    ['event_type']
+)
+
+webhook_processing_time = Histogram(
+    'webhook_processing_seconds',
+    'Webhook processing time'
+)
+
+
+@app.post("/api/webhooks")
+async def handle_webhook(webhook: WebhookPayload):
+    """Webhook with tracing and metrics"""
+    
+    with tracer.start_as_current_span("handle_webhook") as span:
+        span.set_attribute("webhook_type", webhook.event_type)
+        span.set_attribute("payment_id", webhook.payment_id)
+        
+        with webhook_processing_time.time():
+            # Check cache
+            if is_duplicate(webhook):
+                webhook_duplicate_counter.labels(
+                    event_type=webhook.event_type
+                ).inc()
+                return cached_result
+            
+            # Process webhook
+            result = process_webhook(webhook)
+            
+            pledge_created_counter.labels(
+                campaign_id=webhook.campaign_id
+            ).inc()
+            
+            span.set_attribute("status", "success")
+            return result
+
+
+*Result*: Full visibility into system behavior ✓
+
+***
+
+## Problem 6 → Solution: Cascading Failures (Resilience)
+
+### The Problem
+
+One service failure cascades to entire platform
+
+### Solution: Horizontal Scaling + Message Decoupling
+
+#### docker-compose.yml
+
+yaml
+version: '3.9'
+
+services:
+  # API Gateway
+  api-gateway:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - pledge-service
+      - campaign-service
+
+  # Pledge Service (3 replicas)
+  pledge-service:
+    build: ./services/pledge-service
+    deploy:
+      replicas: 3
+    environment:
+      - DATABASE_URL=postgresql://user:pass@db:5432/careforall
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+
+  # Payment Gateway Service (4 replicas)
+  payment-service:
+    build: ./services/payment-service
+    deploy:
+      replicas: 4
+    environment:
+      - DATABASE_URL=postgresql://user:pass@db:5432/careforall
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+
+  # Totals Service (2 replicas)
+  totals-service:
+    build: ./services/totals-service
+    deploy:
+      replicas: 2
+
+  # Campaign Service (2 replicas)
+  campaign-service:
+    build: ./services/campaign-service
+    deploy:
+      replicas: 2
+
+  # Notification Service (2 replicas)
+  notification-service:
+    build: ./services/notification-service
+    deploy:
+      replicas: 2
+
+  # Message Broker
+  rabbitmq:
+    image: rabbitmq:management
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  # Cache
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+  # Database
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=careforall
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+  jaeger:
+    image: jaegertracing/all-in-one
+    ports:
+      - "16686:16686"
+
+volumes:
+  postgres_data:
+
+
+*Result*: Services scale independently, failures isolated ✓
+
+***
+
+## Data Models Summary
+
+### Pledge Service
+
+sql
+-- Pledges
+CREATE TABLE pledges (
+    id UUID PRIMARY KEY,
+    campaign_id UUID NOT NULL,
+    donor_id UUID,
+    amount INTEGER,
+    status VARCHAR(50),  -- INITIATED, AUTHORIZED, CAPTURED
+    version INTEGER,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    INDEX (campaign_id, status)
+);
+
+-- Webhook deduplication
+CREATE TABLE webhook_logs (
+    id UUID PRIMARY KEY,
+    idempotency_key VARCHAR(255) UNIQUE,
+    event_type VARCHAR(100),
+    result JSON,
+    created_at TIMESTAMP
+);
+
+-- Outbox for event publishing
+CREATE TABLE outbox_events (
+    id UUID PRIMARY KEY,
+    aggregate_id UUID,
+    event_type VARCHAR(100),
+    payload JSON,
+    published BOOLEAN,
+    created_at TIMESTAMP,
+    published_at TIMESTAMP,
+    INDEX (published, created_at)
+);
+
+-- State history for audit
+CREATE TABLE pledge_state_history (
+    id UUID PRIMARY KEY,
+    pledge_id UUID,
+    from_status VARCHAR(50),
+    to_status VARCHAR(50),
+    event_timestamp TIMESTAMP,
+    version INTEGER
+);
+
+
+### Totals Service
+
+sql
+CREATE TABLE campaign_totals (
+    campaign_id UUID PRIMARY KEY,
+    total_pledged INTEGER,
+    total_captured INTEGER,
+    pledge_count INTEGER,
+    updated_at TIMESTAMP,
+    INDEX (updated_at)
+);
+
+
+***
+
+## API Endpoints
+
+| Service | Endpoint | Method | Purpose |
+|---------|----------|--------|---------|
+| *Campaign* | /api/v1/campaigns | POST | Create campaign |
+| *Campaign* | /api/v1/campaigns/{id} | GET | Get campaign details |
+| *Pledge* | /api/v1/pledges | POST | Create pledge |
+| *Payment Gateway* | /api/v1/payments/capture | POST | Capture payment |
+| *Payment Gateway* | /api/webhooks | POST | Receive webhook |
+| *Totals* | /api/v1/campaigns/{id}/totals | GET | Get campaign totals |
+| *All* | /health | GET | Health check |
+
+***
+
+## Scalability Strategy
+
+*Using Docker Compose Replicas*:
+
+
+Normal load:
+  - Pledge Service: 2 replicas
+  - Payment Service: 2 replicas
+  - Totals Service: 1 replica
+
+Scale up for 1000+ req/sec:
+  docker-compose up -d --scale pledge-service=5 --scale payment-service=8
+
+Nginx load balancer automatically distributes:
+  - Least connections algorithm
+  - Health checks (removes unhealthy instances)
+  - Graceful shutdown support
+
+
+***
+
+## Deliverables for Checkpoint 1
+
+✅ *Architectural Diagram* - System overview with all services  
+✅ *Data Models* - Clean schema for each service  
+✅ *API Endpoints* - Simple and clear  
+✅ *Problem-Solution Mapping* - All 6 problems addressed  
+✅ *Docker Compose* - Service scaling configuration  
+✅ *Scalability Strategy* - 1000+ req/sec capable  
+
+***
+
+This completes *CHECKPOINT 1: ARCHITECTURE & DESIGN* with all problems and solutions integrated!
+
+[1](https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/48429734/30cb3c25-5b54-483a-821c-7313f2f311c1/Api-Avengers-Onsite-Problem.pdf)

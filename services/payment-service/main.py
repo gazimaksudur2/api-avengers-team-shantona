@@ -42,7 +42,7 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "payment-service")
 # STRIPE_API_KEY = os.getenv("STRIPE_API_KEY", "sk_test_dummy")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "whsec_dummy")
+# WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "whsec_dummy")
 
 # Database setup
 engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=40)
