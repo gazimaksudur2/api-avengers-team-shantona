@@ -7,6 +7,7 @@ const endpointGroups = [
   {
     title: 'Campaign Service (Port 8005)',
     description: 'CRUD for campaign lifecycle.',
+    port: 8005,
     endpoints: [
       {
         id: 'campaign-list',
@@ -71,6 +72,7 @@ const endpointGroups = [
   {
     title: 'Donation Service (Port 8001)',
     description: 'Handles pledges & donor history.',
+    port: 8001,
     endpoints: [
       {
         id: 'donation-create',
@@ -125,6 +127,7 @@ const endpointGroups = [
   {
     title: 'Payment Service (Port 8002)',
     description: 'Payment intents, idempotent webhooks, refunds.',
+    port: 8002,
     endpoints: [
       {
         id: 'payment-intent',
@@ -189,6 +192,7 @@ const endpointGroups = [
   {
     title: 'Totals Service (Port 8003)',
     description: 'Multi-level caching for campaign totals.',
+    port: 8003,
     endpoints: [
       {
         id: 'totals-cached',
@@ -231,6 +235,7 @@ const endpointGroups = [
   {
     title: 'Bank Service (Port 8006)',
     description: 'Ledger-backed accounts & transfers.',
+    port: 8006,
     endpoints: [
       {
         id: 'bank-account-create',
@@ -287,6 +292,7 @@ const endpointGroups = [
   {
     title: 'Admin Service (Port 8007)',
     description: 'Operational dashboards & system health (JWT required).',
+    port: 8007,
     endpoints: [
       {
         id: 'admin-login',
@@ -454,7 +460,7 @@ const buildRequest = (config, values) => {
   };
 };
 
-function EndpointTester({ config, state, onSend }) {
+function EndpointTester({ config, state, onSend, groupPort }) {
   const [values, setValues] = useState(() => buildInitialValues(config.fields));
 
   const handleChange = (field) => (event) => {
@@ -464,11 +470,11 @@ function EndpointTester({ config, state, onSend }) {
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    onSend(config, values);
+    onSend(config, values, groupPort);
   };
 
   const triggerButton = (
-    <button type={config.fields?.length ? 'submit' : 'button'} onClick={config.fields?.length ? undefined : () => onSend(config, values)} disabled={state?.loading}>
+    <button type={config.fields?.length ? 'submit' : 'button'} onClick={config.fields?.length ? undefined : () => onSend(config, values, groupPort)} disabled={state?.loading}>
       {state?.loading ? 'Sending…' : config.cta ?? 'Send request'}
     </button>
   );
@@ -535,11 +541,12 @@ function App() {
 
   const apiBase = useMemo(() => baseUrl.replace(/\/$/, ''), [baseUrl]);
 
-  const callApi = useCallback(async (config, values = {}) => {
+  const callApi = useCallback(async (config, values = {}, port = null) => {
     setResults((prev) => ({ ...prev, [config.id]: { loading: true, data: prev[config.id]?.data ?? null, error: null } }));
     try {
       const { url, body, headers } = buildRequest(config, values);
-      const response = await fetch(`${apiBase}${url}`, {
+      const targetUrl = port ? `http://localhost:${port}${url}` : `${apiBase}${url}`;
+      const response = await fetch(targetUrl, {
         method: config.method,
         headers: {
           Accept: config.expectText ? 'text/plain' : 'application/json',
@@ -584,7 +591,7 @@ function App() {
       <section className="panel">
         <h2>Environment</h2>
         <label className="field">
-          <span>API Base URL</span>
+          <span>API Base URL (Fallback)</span>
           <input
             type="text"
             value={baseUrl}
@@ -593,7 +600,7 @@ function App() {
           />
         </label>
         <p className="hint">
-          Default matches the API Gateway from the docs. Switch to a direct service URL if you bypass Nginx.
+          Each service calls its direct port: Campaign (8005), Donation (8001), Payment (8002), Totals (8003), Bank (8006), Admin (8007).
         </p>
       </section>
 
@@ -609,6 +616,7 @@ function App() {
               config={endpoint}
               state={results[endpoint.id]}
               onSend={callApi}
+              groupPort={group.port}
             />
           ))}
         </section>
