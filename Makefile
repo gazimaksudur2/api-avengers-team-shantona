@@ -44,6 +44,15 @@ logs-totals: ## Show logs from totals service
 logs-notification: ## Show logs from notification service
 	docker-compose logs -f notification-service
 
+logs-campaign: ## Show logs from campaign service
+	docker-compose logs -f campaign-service
+
+logs-bank: ## Show logs from bank service
+	docker-compose logs -f bank-service
+
+logs-admin: ## Show logs from admin service
+	docker-compose logs -f admin-service
+
 build: ## Build all Docker images
 	@echo "🔨 Building Docker images..."
 	docker-compose build
@@ -79,6 +88,12 @@ health: ## Check health of all services
 	@curl -s http://localhost:8003/health > /dev/null && echo "✅ Healthy" || echo "❌ Unhealthy"
 	@echo -n "  Notification Service: "
 	@curl -s http://localhost:8004/health > /dev/null && echo "✅ Healthy" || echo "❌ Unhealthy"
+	@echo -n "  Campaign Service: "
+	@curl -s http://localhost:8005/health > /dev/null && echo "✅ Healthy" || echo "❌ Unhealthy"
+	@echo -n "  Bank Service: "
+	@curl -s http://localhost:8006/health > /dev/null && echo "✅ Healthy" || echo "❌ Unhealthy"
+	@echo -n "  Admin Service: "
+	@curl -s http://localhost:8007/health > /dev/null && echo "✅ Healthy" || echo "❌ Unhealthy"
 
 demo: ## Run the demo flow
 	@echo "🎬 Running demo flow..."
@@ -103,6 +118,21 @@ scale-donation: ## Scale donation service (make scale-donation REPLICAS=5)
 
 scale-payment: ## Scale payment service (make scale-payment REPLICAS=5)
 	docker-compose up -d --scale payment-service=$(REPLICAS)
+
+scale-totals: ## Scale totals service (make scale-totals REPLICAS=3)
+	docker-compose up -d --scale totals-service=$(REPLICAS)
+
+scale-notification: ## Scale notification service (make scale-notification REPLICAS=3)
+	docker-compose up -d --scale notification-service=$(REPLICAS)
+
+scale-campaign: ## Scale campaign service (make scale-campaign REPLICAS=3)
+	docker-compose up -d --scale campaign-service=$(REPLICAS)
+
+scale-bank: ## Scale bank service (make scale-bank REPLICAS=3)
+	docker-compose up -d --scale bank-service=$(REPLICAS)
+
+scale-all: ## Scale all services (make scale-all REPLICAS=5)
+	docker-compose up -d --scale donation-service=$(REPLICAS) --scale payment-service=$(REPLICAS) --scale totals-service=$(REPLICAS) --scale notification-service=$(REPLICAS) --scale campaign-service=$(REPLICAS) --scale bank-service=$(REPLICAS)
 
 metrics: ## Open Prometheus in browser
 	@echo "Opening Prometheus..."

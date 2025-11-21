@@ -42,6 +42,38 @@ A robust, scalable microservices-based donation platform built to handle 1000+ r
 
 📐 **[MODULAR_ARCHITECTURE_VISUAL.md](MODULAR_ARCHITECTURE_VISUAL.md)** - Visual guide to the modular structure
 
+### 🐳 Docker Compose & Deployment (NEW!)
+
+🚀 **[DOCKER_QUICKSTART.md](DOCKER_QUICKSTART.md)** - **Get running in 3 steps** (fastest way to start!)
+   - One-click platform startup
+   - Windows & Linux/Mac scripts
+   - All 7 services + infrastructure
+   - Complete with observability stack
+
+📦 **[DOCKER_GUIDE.md](DOCKER_GUIDE.md)** - **Complete Docker Compose guide** (50+ pages)
+   - Full configuration reference
+   - Development & production modes
+   - Scaling strategies
+   - Troubleshooting & best practices
+   - Monitoring & observability setup
+
+📁 **[DOCKER_FILES_SUMMARY.md](DOCKER_FILES_SUMMARY.md)** - Overview of all Docker configuration files
+
+**Quick Commands:**
+```bash
+# Start everything (Windows)
+.\start-platform.ps1
+
+# Start everything (Linux/Mac)
+./start-platform.sh
+
+# Or use Make
+make start
+
+# Or use Docker Compose directly
+docker-compose up -d
+```
+
 ### 🚀 Quick Start & Testing
 
 🚀 **[QUICK_START_MODULAR.md](QUICK_START_MODULAR.md)** - Get started with the refactored services in 5 minutes
